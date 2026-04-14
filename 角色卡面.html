@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>FGO 自定义卡牌生成器 (高清重制版)</title>
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <style>
+        :root {
+            --card-width: 450px;
+            --card-height: 780px;
+        }
+
+        body {
+            font-family: "Microsoft YaHei", sans-serif;
+            background-color: #121212;
+            color: #f0f0f0;
+            display: flex;
+            padding: 30px;
+            gap: 40px;
+        }
+
+        /* 左侧控制台样式 */
+        .controls {
+            flex: 1;
+            max-width: 420px;
+            background: #1e1e1e;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .controls h2 { margin-top: 0; color: #fff; border-bottom: 2px solid #e0c060; padding-bottom: 10px; }
+        .control-group label { display: block; margin-bottom: 6px; font-weight: bold; color: #e0c060; font-size: 14px; }
+        input[type="file"], input[type="text"], input[type="number"], select {
+            width: 100%; padding: 10px; box-sizing: border-box; background: #2a2a2a; border: 1px solid #444; color: white; border-radius: 6px; font-size: 14px;
+        }
+        .controls hr { border: none; border-top: 1px solid #444; margin: 10px 0; }
+        
+        .save-btn {
+            margin-top: auto; padding: 15px; background: linear-gradient(to bottom, #f0c060, #a08040); color: black; font-weight: bold; font-size: 16px; border: none; border-radius: 6px; cursor: pointer; transition: transform 0.2s;
+        }
+        .save-btn:hover { transform: scale(1.03); }
+
+        /* 右侧卡牌预览区 */
+        .preview-container { display: flex; flex-direction: column; align-items: center; justify-content: start; }
+        
+        /* #card-canvas-container 将是最终截图的目标区域 */
+        .card-final-view {
+            width: var(--card-width);
+            height: var(--card-height);
+            position: relative;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 15px 40px rgba(0,0,0,0.9);
+            background-color: #000;
+        }
+
+        /* 各个图层定位 */
+        .layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        
+        /* 1. 背景人物底图层 (最底层) */
+        #layer-bg-canvas { z-index: 10; }
+
+        /* 2. 边框底图层 (经过JS去白底和重上色处理) */
+        #layer-border-canvas { z-index: 20; }
+        
+        /* 3. 职介图标层 (叠加在边框之上覆盖原图职介) */
+        #layer-class-icon {
+            position: absolute; bottom: 4.8%; left: 50%; transform: translateX(-50%);
+            width: 75px; height: 75px; z-index: 30; object-fit: contain; pointer-events: none;
+        }
+
+        /* 4. 文字图层 (顶层) */
+        .text-overlay {
+            position: absolute; z-index: 40; color: white; font-family: "Georgia", serif; pointer-events: none;
+            /* 高清重制：彻底放弃 -webkit-text-stroke。
+               使用全方位高清硬阴影组合来模拟清晰描边，确保在截图和放大时也保持极高清晰度。
+            */
+            -webkit-text-stroke: initial;
+            text-shadow:
+                1.5px 1.5px 0 #000,
+                -1.5px -1.5px 0 #000,
+                1.5px -1.5px 0 #000,
+                -1.5px 1.5px 0 #000,
+                0 1.5px 0 #000,
+                1.5px 0 0 #000,
+                0 -1.5px 0 #000,
+                -1.5px 0 0 #000,
+                0 0 1.5px #000; /* 添加微小柔和，使其在截图时更平滑 */
+        }
+
+        #text-name {
+            bottom: 12.8%; left: 0; width: 100%; text-align: center; font-size: 26px; font-weight: bold; letter-spacing: 2px;
+        }
+        #text-atk { bottom: 4.5%; left: 17.5%; font-size: 22px; font-weight: bold; }
+        #text-hp { bottom: 4.5%; right: 16%; font-size: 22px; font-weight: bold; }
+
+        /* 新增：文字设置区域的标题和输入框样式 */
+        .text-settings-group { display: flex; flex-direction: column; gap: 8px; border: 1px solid #444; padding: 15px; border-radius: 8px; }
+        .text-settings-header { color: #e0c060; font-weight: bold; font-size: 14px; margin-bottom: 5px; }
+
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <h2>卡牌生成器 (重制版)</h2>
+        
+        <div class="control-group">
+            <label>1. 上传第一张 (背景人物底图)</label>
+            <input type="file" id="upload-bg" accept="image/*">
+        </div>
+
+        <div class="control-group">
+            <label>2. 上传第二张 (职介透明底图标)</label>
+            <input type="file" id="upload-class" accept="image/*">
+        </div>
+
+        <div class="control-group">
+            <label>3. 上传第三张 (原 UI 边框图)</label>
+            <input type="file" id="upload-border" accept="image/*">
+        </div>
+
+        <hr>
+
+        <div class="control-group">
+            <label>UI 边框颜色</label>
+            <select id="color-select">
+                <option value="base">基础金色 (默认)</option>
+                <option value="darkred">暗红 (Dark Red)</option>
+                <option value="darkpurple">暗紫 (Dark Purple)</option>
+                <option value="black">黑色 (Black)</option>
+                <option value="fullgold">全金 (Gold)</option>
+                <option value="darkblue">暗蓝 (Dark Blue)</option>
+                <option value="darkgreen">暗绿 (Dark Green)</option>
+                <option value="darkpink">暗粉 (Dark Pink)</option>
+                <option value="rainbow">彩色 (Colorful)</option>
+            </select>
+        </div>
+
+        <div class="control-group text-settings-group">
+            <div class="text-settings-header">文字设置</div>
+            
+            <div class="control-group">
+                <label>姓名</label>
+                <input type="text" id="input-name" value="">
+            </div>
+            <div class="control-group">
+                <label>姓名文字大小 (px)</label>
+                <input type="number" id="size-name" value="26" min="10" max="60">
+            </div>
+            
+            <div class="control-group">
+                <label>ATK (攻击力)</label>
+                <input type="text" id="input-atk" value="">
+            </div>
+            <div class="control-group">
+                <label>ATK文字大小 (px)</label>
+                <input type="number" id="size-atk" value="22" min="10" max="60">
+            </div>
+
+            <div class="control-group">
+                <label>HP (生命值)</label>
+                <input type="text" id="input-hp" value="">
+            </div>
+            <div class="control-group">
+                <label>HP文字大小 (px)</label>
+                <input type="number" id="size-hp" value="22" min="10" max="60">
+            </div>
+        </div>
+
+        <button id="save-image-btn" class="save-btn">保存高清 PNG 图片</button>
+    </div>
+
+    <div class="preview-container">
+        <div class="card-final-view" id="card-canvas-container">
+            <canvas id="layer-bg-canvas" class="layer" width="450" height="780"></canvas>
+            <canvas id="layer-border-canvas" class="layer" width="450" height="780"></canvas>
+            < img id="layer-class-icon" src="" alt="">
+            
+            <div id="text-name" class="text-overlay"></div>
+            <div id="text-atk" class="text-overlay"></div>
+            <div id="text-hp" class="text-overlay"></div>
+        </div>
+    </div>
+
+    <script>
+        // 定义各种颜色的目标RGB值，用于算法进行高精度替换
+        const COLOR_MAP = {
+            'base':      null, // 不替换
+            'darkred':   [180,  0,  0], 
+            'darkpurple':[150,  0, 200], 
+            'black':     [ 30, 30, 30], 
+            'fullgold':  [255, 200,  0], 
+            'darkblue':  [  0, 20, 180], 
+            'darkgreen': [  0, 160,  0], 
+            'darkpink':  [255, 80, 150]
+        };
+
+        const cardWidth = 450;
+        const cardHeight = 780;
+        const borderCanvas = document.getElementById('layer-border-canvas');
+        const borderCtx = borderCanvas.getContext('2d');
+        const bgCanvas = document.getElementById('layer-bg-canvas');
+        const bgCtx = bgCanvas.getContext('2d');
+        let originalBorderImageData = null; // 用于缓存原始未重上色的数据
+
+        // 处理普通图片上传（背景、职介图标）
+        function handleSimpleUpload(inputId, action) {
+            document.getElementById(inputId).addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = action;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        handleSimpleUpload('upload-bg', function(event) {
+            const img = new Image();
+            img.onload = () => { bgCtx.drawImage(img, 0, 0, cardWidth, cardHeight); };
+            img.src = event.target.result;
+        });
+
+        handleSimpleUpload('upload-class', function(event) {
+            document.getElementById('layer-class-icon').src = event.target.result;
+        });
+
+        // 处理边框底图上传（核心：去白底 + 缓存）
+        document.getElementById('upload-border').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const img = new Image();
+                img.onload = function() {
+                    borderCtx.clearRect(0, 0, cardWidth, cardHeight);
+                    borderCtx.drawImage(img, 0, 0, cardWidth, cardHeight);
+                    const imgData = borderCtx.getImageData(0, 0, cardWidth, cardHeight);
+                    const data = imgData.data;
+
+                    // 1. 真正的去白底算法
+                    for (let i = 0; i < data.length; i += 4) {
+                        let r = data[i], g = data[i+1], b = data[i+2];
+                        // 设定的白底容差，RGB全部大于230判为白
+                        if (r > 230 && g > 230 && b > 230) {
+                            // 线性透明化处理（防止边缘毛刺）
+                            let alpha = (255 - Math.min(r, g, b)) * 6;
+                            data[i+3] = Math.max(0, Math.min(255, alpha)); 
+                        }
+                    }
+                    
+                    borderCtx.putImageData(imgData, 0, 0);
+                    // 缓存这个经过了去白底处理的原始图像数据
+                    originalBorderImageData = borderCtx.getImageData(0, 0, cardWidth, cardHeight);
+                    
+                    // 读取完立即应用当前选定的颜色
+                    applyCurrentColor();
+                }
+                img.src = event.target.result;
+            }
+            reader.readAsDataURL(file);
+        });
+
+        // 处理颜色替换逻辑
+        function applyCurrentColor() {
+            if (!originalBorderImageData) return;
+            
+            const mode = document.getElementById('color-select').value;
+            const imgData = new ImageData(
+                new Uint8ClampedArray(originalBorderImageData.data),
+                originalBorderImageData.width,
+                originalBorderImageData.height
+            );
+            const data = imgData.data;
+
+            if (mode === 'rainbow') {
+                // 彩色选项：创建一个多色线性渐变并填充非透明区域
+                const gradientCanvas = document.createElement('canvas');
+                gradientCanvas.width = cardWidth;
+                gradientCanvas.height = cardHeight;
+                const gCtx = gradientCanvas.getContext('2d');
+                const gradient = gCtx.createLinearGradient(0, 0, cardWidth, cardHeight);
+                gradient.addColorStop(0, "red"); gradient.addColorStop(0.2, "orange"); gradient.addColorStop(0.4, "yellow");
+                gradient.addColorStop(0.6, "green"); gradient.addColorStop(0.8, "blue"); gradient.addColorStop(1, "purple");
+                gCtx.fillStyle = gradient;
+                gCtx.fillRect(0, 0, cardWidth, cardHeight);
+                const gData = gCtx.getImageData(0, 0, cardWidth, cardHeight).data;
+
+                for (let i = 0; i < data.length; i += 4) {
+                    if (data[i+3] > 10) { // 只有非透明区域才填色
+                        data[i] = gData[i]; data[i+1] = gData[i+1]; data[i+2] = gData[i+2];
+                    }
+                }
+            } else if (COLOR_MAP[mode]) {
+                // 普通颜色替换：保持像素的亮度关系，改变色相
+                const targetRGB = COLOR_MAP[mode];
+                for (let i = 0; i < data.length; i += 4) {
+                    let r = data[i], g = data[i+1], b = data[i+2], a = data[i+3];
+                    if (a > 10) { // 非透明区域
+                        let brightness = (r + g + b) / 3 / 255;
+                        data[i] = targetRGB[0] * brightness * 1.3;
+                        data[i+1] = targetRGB[1] * brightness * 1.3;
+                        data[i+2] = targetRGB[2] * brightness * 1.3;
+                    }
+                }
+            } else {
+                // 'base' 金色默认，直接使用缓存数据
+            }
+
+            borderCtx.putImageData(imgData, 0, 0);
+        }
+
+        // 文字同步
+        ['name', 'atk', 'hp'].forEach(id => {
+            document.getElementById(`input-${id}`).addEventListener('input', e => {
+                document.getElementById(`text-${id}`).innerText = e.target.value;
+            });
+        });
+
+        // 新增：文字大小同步逻辑
+        ['name', 'atk', 'hp'].forEach(id => {
+            document.getElementById(`size-${id}`).addEventListener('input', e => {
+                const size = parseInt(e.target.value) || 26; // 默认值
+                document.getElementById(`text-${id}`).style.fontSize = `${size}px`;
+            });
+        });
+
+        // 颜色切换监听
+        document.getElementById('color-select').addEventListener('change', applyCurrentColor);
+
+        // 一键保存高清 PNG 图片
+        document.getElementById('save-image-btn').addEventListener('click', function() {
+            html2canvas(document.getElementById('card-canvas-container'), {
+                useCORS: true, // 允许跨域图片
+                backgroundColor: null, // 透明背景保存
+                scale: 3 // 将清晰度提高3倍
+            }).then(canvas => {
+                const link = document.createElement('a');
+                link.download = `FGO_CARD_${Date.now()}.png`;
+                link.href = canvas.toDataURL('image/png');
+                link.click();
+            });
+        });
+
+    </script>
+</body>
+</html>
